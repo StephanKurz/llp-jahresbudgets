@@ -20,7 +20,7 @@ Deno.serve(async (req: Request) => {
     return new Response("ok", { headers: CORS_HEADERS });
   }
 
-  let body: { konto_nr?: unknown; jahr?: unknown; budget?: unknown };
+  let body: { konto_nr?: unknown; jahr?: unknown; budget?: unknown; ist_einnahmekonto?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -30,6 +30,7 @@ Deno.serve(async (req: Request) => {
   const konto_nr = Number(body.konto_nr);
   const jahr = Number(body.jahr);
   const budget = Number(body.budget);
+  const ist_einnahmekonto = Boolean(body.ist_einnahmekonto);
 
   if (!Number.isInteger(konto_nr) || konto_nr <= 0) {
     return jsonResponse({ error: "konto_nr fehlt oder ist ungültig." }, 400);
@@ -52,7 +53,12 @@ Deno.serve(async (req: Request) => {
         apikey: SUPABASE_ANON_KEY,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ p_konto_nr: konto_nr, p_jahr: jahr, p_budget: budget }),
+      body: JSON.stringify({
+        p_konto_nr: konto_nr,
+        p_jahr: jahr,
+        p_budget: budget,
+        p_ist_einnahmekonto: ist_einnahmekonto,
+      }),
     });
 
     if (!rpcResp.ok) {
@@ -63,5 +69,5 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: `Verbindungsfehler zu Supabase: ${String(e)}` }, 502);
   }
 
-  return jsonResponse({ ok: true, konto_nr, jahr, budget }, 200);
+  return jsonResponse({ ok: true, konto_nr, jahr, budget, ist_einnahmekonto }, 200);
 });

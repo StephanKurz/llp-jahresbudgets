@@ -35,22 +35,38 @@
     overflow: hidden;
   }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { padding: 9px 10px; text-align: left; border-bottom: 1px solid var(--border); }
+  th, td { padding: 9px 10px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: middle; }
   th { color: var(--muted); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: .02em; }
   tr:last-child td { border-bottom: none; }
   td.num, th.num { text-align: right; }
 
   .konto-nr { color: var(--muted); font-variant-numeric: tabular-nums; }
 
+  .budget-cell { min-width: 130px; }
+  .budget-display {
+    display: inline-flex; align-items: center; gap: 6px; justify-content: flex-end;
+    width: 100%;
+  }
+  .budget-value { font-variant-numeric: tabular-nums; }
+  .edit-btn {
+    cursor: pointer; background: none; border: none; padding: 2px; color: var(--muted);
+    display: inline-flex; align-items: center; vertical-align: middle; flex: none;
+  }
+  .edit-btn:hover { color: var(--text); }
   .budget-input {
     width: 100px; padding: 5px 7px; border: 1px solid var(--border); border-radius: 5px;
     font-size: 13px; text-align: right; font-variant-numeric: tabular-nums;
   }
   .budget-input:focus { outline: none; border-color: var(--blue); }
 
-  .save-feedback { display: block; font-size: 11px; margin-top: 3px; min-height: 14px; }
+  .save-feedback { display: block; font-size: 11px; margin-top: 3px; min-height: 14px; text-align: right; }
   .save-feedback.ok { color: var(--ok); }
   .save-feedback.err { color: var(--danger); }
+
+  .einnahme-cell { text-align: center; }
+  .einnahme-cell input { width: 16px; height: 16px; cursor: pointer; vertical-align: middle; }
+
+  .muted-dash { color: var(--muted); }
 
   .bar-cell { min-width: 140px; }
   .bar-track {
@@ -71,6 +87,7 @@
   .dot-neutral { background: var(--neutral); }
 
   #loading { color: var(--muted); font-size: 13px; display: flex; align-items: center; gap: 9px; }
+  #loading[hidden] { display: none; }
   .spinner {
     width: 15px; height: 15px; flex: none;
     border: 2px solid var(--border); border-top-color: var(--blue);
@@ -92,6 +109,7 @@
         <tr>
           <th>Nr.</th>
           <th>Buchungskonto</th>
+          <th class="einnahme-cell" title="Bei Einnahmekonten entfallen Auslastung und Budgetwarnung.">Einnahme&shy;konto</th>
           <th class="num">Jahresbudget</th>
           <th class="num">Ist (Jahr)</th>
           <th>Auslastung</th>
@@ -119,6 +137,13 @@
   const fmtEUR = new Intl.NumberFormat("de-DE", { style: "currency", currency: "EUR" });
   const fmtNum = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 });
 
+  // Lucide "pencil" (MIT-Lizenz, lucide-icons/lucide) - gleiches Icon wie im Schulreport-Tool
+  const PENCIL_SVG =
+    '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" ' +
+    'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 ' +
+    '.623.622l4.353-1.32a2 2 0 0 0 .83-.497z" /><path d="m15 5 4 4" /></svg>';
+
   let currentJahr = null;
 
   function ampelTitle(ampel) {
@@ -141,19 +166,18 @@
     const tdName = document.createElement("td");
     tdName.textContent = konto.name;
 
+    const tdEinnahme = document.createElement("td");
+    tdEinnahme.className = "einnahme-cell";
+    const einnahmeCheckbox = document.createElement("input");
+    einnahmeCheckbox.type = "checkbox";
+    einnahmeCheckbox.checked = !!konto.istEinnahmekonto;
+    einnahmeCheckbox.title = "Einnahmekonto: keine Auslastung/Budgetwarnung";
+    tdEinnahme.appendChild(einnahmeCheckbox);
+
     const tdBudget = document.createElement("td");
-    tdBudget.className = "num";
-    const input = document.createElement("input");
-    input.type = "number";
-    input.min = "0";
-    input.step = "0.01";
-    input.className = "budget-input";
-    input.value = konto.budget > 0 ? konto.budget.toFixed(2) : "";
-    input.placeholder = "0,00";
+    tdBudget.className = "num budget-cell";
     const feedback = document.createElement("span");
     feedback.className = "save-feedback";
-    tdBudget.appendChild(input);
-    tdBudget.appendChild(feedback);
 
     const tdIst = document.createElement("td");
     tdIst.className = "num";
@@ -161,76 +185,142 @@
 
     const tdBar = document.createElement("td");
     tdBar.className = "bar-cell";
-    tdBar.innerHTML = renderBarHtml(konto);
 
     const tdAmpel = document.createElement("td");
-    tdAmpel.title = ampelTitle(konto.ampel);
-    const dot = document.createElement("span");
-    dot.className = "dot dot-" + (konto.ampel || "neutral");
-    tdAmpel.appendChild(dot);
 
-    tr.append(tdNr, tdName, tdBudget, tdIst, tdBar, tdAmpel);
+    tr.append(tdNr, tdName, tdEinnahme, tdBudget, tdIst, tdBar, tdAmpel);
     tbody.appendChild(tr);
 
-    input.addEventListener("change", () => saveBudget(konto.nr, input, feedback, tdBar, tdAmpel));
+    const state = { budget: konto.budget, actual: konto.actual, istEinnahmekonto: !!konto.istEinnahmekonto };
+
+    renderBudgetDisplay(tdBudget, feedback, state);
+    tdBudget.appendChild(feedback);
+    renderBarAndAmpel(tdBar, tdAmpel, state);
+
+    einnahmeCheckbox.addEventListener("change", () => {
+      state.istEinnahmekonto = einnahmeCheckbox.checked;
+      renderBarAndAmpel(tdBar, tdAmpel, state);
+      saveBudget(konto.nr, state, feedback, () => {});
+    });
   }
 
-  function renderBarHtml(konto) {
-    if (!konto.budget || konto.budget <= 0) {
-      return `<div class="bar-track"></div><div class="bar-label">kein Budget hinterlegt</div>`;
+  function renderBudgetDisplay(tdBudget, feedback, state) {
+    tdBudget.innerHTML = "";
+    const wrap = document.createElement("div");
+    wrap.className = "budget-display";
+    const valueSpan = document.createElement("span");
+    valueSpan.className = "budget-value";
+    valueSpan.textContent = fmtEUR.format(state.budget || 0);
+    const editBtn = document.createElement("button");
+    editBtn.className = "edit-btn";
+    editBtn.type = "button";
+    editBtn.title = "Bearbeiten";
+    editBtn.innerHTML = PENCIL_SVG;
+    wrap.append(valueSpan, editBtn);
+    tdBudget.appendChild(wrap);
+
+    editBtn.addEventListener("click", () => renderBudgetEdit(tdBudget, feedback, state));
+  }
+
+  function renderBudgetEdit(tdBudget, feedback, state) {
+    tdBudget.innerHTML = "";
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = "0";
+    input.step = "0.01";
+    input.className = "budget-input";
+    input.value = state.budget > 0 ? state.budget.toFixed(2) : "";
+    input.placeholder = "0,00";
+    tdBudget.appendChild(input);
+    input.focus();
+    input.select();
+
+    let done = false;
+    const commit = () => {
+      if (done) return;
+      done = true;
+      const value = parseFloat(input.value.replace(",", ".").trim() || "0");
+      if (isNaN(value) || value < 0) {
+        feedback.textContent = "Ungültiger Wert.";
+        feedback.className = "save-feedback err";
+        renderBudgetDisplay(tdBudget, feedback, state);
+        return;
+      }
+      state.budget = value;
+      renderBudgetDisplay(tdBudget, feedback, state);
+      const tr = tdBudget.closest("tr");
+      const tdBar = tr.querySelector(".bar-cell");
+      const tdAmpel = tdBar.nextElementSibling;
+      renderBarAndAmpel(tdBar, tdAmpel, state);
+      saveBudget(Number(tr.dataset.nr), state, feedback, () => {});
+    };
+    input.addEventListener("blur", commit);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") input.blur();
+      if (e.key === "Escape") { done = true; renderBudgetDisplay(tdBudget, feedback, state); }
+    });
+  }
+
+  function renderBarAndAmpel(tdBar, tdAmpel, state) {
+    if (state.istEinnahmekonto) {
+      tdBar.innerHTML = `<span class="muted-dash">–</span>`;
+      tdAmpel.innerHTML = `<span class="muted-dash">–</span>`;
+      tdAmpel.title = "Einnahmekonto – keine Budgetwarnung.";
+      return;
     }
-    const prozent = konto.prozent ?? 0;
-    const width = Math.min(prozent, 100);
-    const overClass = prozent > 100 ? " over" : "";
-    return (
-      `<div class="bar-track"><div class="bar-fill${overClass}" style="width:${width}%"></div></div>` +
-      `<div class="bar-label">${fmtNum.format(Math.round(prozent))} %</div>`
-    );
+
+    const prozent = state.budget > 0 ? (state.actual / state.budget) * 100 : null;
+    if (!state.budget || state.budget <= 0) {
+      tdBar.innerHTML = `<div class="bar-track"></div><div class="bar-label">kein Budget hinterlegt</div>`;
+    } else {
+      const width = Math.min(prozent, 100);
+      const overClass = prozent > 100 ? " over" : "";
+      tdBar.innerHTML =
+        `<div class="bar-track"><div class="bar-fill${overClass}" style="width:${width}%"></div></div>` +
+        `<div class="bar-label">${fmtNum.format(Math.round(prozent))} %</div>`;
+    }
+
+    const ampel = computeAmpel(state.budget, state.actual);
+    tdAmpel.innerHTML = `<span class="dot dot-${ampel || "neutral"}"></span>`;
+    tdAmpel.title = ampelTitle(ampel);
   }
 
-  function computeAmpel(budget, actual, jahr) {
+  function computeAmpel(budget, actual) {
     if (!budget || budget <= 0) return null;
     const now = new Date();
     const start = new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
     const tag = Math.floor((now.getTime() - start.getTime()) / 86400000) + 1;
-    const tageGesamt = (new Date(Date.UTC(jahr, 1, 29)).getUTCMonth() === 1) ? 366 : 365;
+    const tageGesamt = (new Date(Date.UTC(now.getUTCFullYear(), 1, 29)).getUTCMonth() === 1) ? 366 : 365;
     const prorated = budget * (tag / tageGesamt);
     if (actual < prorated) return "green";
     if (actual <= prorated * 1.10) return "yellow";
     return "red";
   }
 
-  async function saveBudget(nr, input, feedback, tdBar, tdAmpel) {
-    const value = parseFloat(input.value.replace(",", "."));
-    if (isNaN(value) || value < 0) {
-      feedback.textContent = "Ungültiger Wert.";
-      feedback.className = "save-feedback err";
-      return;
-    }
+  async function saveBudget(nr, state, feedback, onDone) {
     feedback.textContent = "Speichere …";
     feedback.className = "save-feedback";
     try {
       const resp = await fetch(SPEICHERN_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ konto_nr: nr, jahr: currentJahr, budget: value }),
+        body: JSON.stringify({
+          konto_nr: nr,
+          jahr: currentJahr,
+          budget: state.budget,
+          ist_einnahmekonto: state.istEinnahmekonto,
+        }),
       });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || "Unbekannter Fehler.");
 
       feedback.textContent = "Gespeichert.";
       feedback.className = "save-feedback ok";
-
-      const tr = input.closest("tr");
-      const actualText = tr.children[3].textContent;
-      const actual = parseFloat(actualText.replace(/[^\d,-]/g, "").replace(",", "."));
-      const ampel = computeAmpel(value, actual, currentJahr);
-      tdBar.innerHTML = renderBarHtml({ budget: value, actual, prozent: value > 0 ? (actual / value) * 100 : null });
-      tdAmpel.title = ampelTitle(ampel);
-      tdAmpel.querySelector(".dot").className = "dot dot-" + (ampel || "neutral");
+      onDone(true);
     } catch (e) {
       feedback.textContent = "Fehler: " + e.message;
       feedback.className = "save-feedback err";
+      onDone(false);
     }
   }
 
@@ -250,7 +340,7 @@
 
       currentJahr = data.jahr;
       titleEl.textContent = `Budgetplanung ${data.jahr}`;
-      subtitleEl.textContent = `Stand: ${new Date(data.heute).toLocaleDateString("de-DE")} · nur Konten mit Buchungen in ${data.jahr}`;
+      subtitleEl.textContent = `Stand: ${new Date(data.heute).toLocaleDateString("de-DE")}`;
 
       if (data.konten.length === 0) {
         clearInterval(timer);
@@ -263,10 +353,12 @@
 
       clearInterval(timer);
       loadingEl.hidden = true;
+      loadingEl.style.display = "none";
       tableCard.hidden = false;
     } catch (e) {
       clearInterval(timer);
       loadingEl.hidden = true;
+      loadingEl.style.display = "none";
       errorEl.textContent = "Fehler beim Laden: " + e.message;
       errorEl.hidden = false;
     }

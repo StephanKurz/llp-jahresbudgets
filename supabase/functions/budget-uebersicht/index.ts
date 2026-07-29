@@ -136,16 +136,17 @@ Deno.serve(async (req: Request) => {
     }
 
     const budgetResp = await fetch(
-      `${SUPABASE_URL}/rest/v1/konto_budgets?jahr=eq.${jahr}&select=konto_nr,budget`,
+      `${SUPABASE_URL}/rest/v1/konto_budgets?jahr=eq.${jahr}&select=konto_nr,budget,ist_einnahmekonto`,
       { headers: { apikey: SERVICE_ROLE_KEY, Authorization: `Bearer ${SERVICE_ROLE_KEY}` } },
     );
     if (!budgetResp.ok) {
       const text = await budgetResp.text();
       throw new Error(`Supabase-Fehler beim Lesen der Budgets (${budgetResp.status}): ${text}`);
     }
-    const budgetRows: { konto_nr: number; budget: string | number }[] = await budgetResp.json();
-    const budgetByKontoNr = new Map<number, number>(
-      budgetRows.map((r) => [r.konto_nr, Number(r.budget)]),
+    const budgetRows: { konto_nr: number; budget: string | number; ist_einnahmekonto: boolean }[] =
+      await budgetResp.json();
+    const budgetByKontoNr = new Map<number, { budget: number; istEinnahmekonto: boolean }>(
+      budgetRows.map((r) => [r.konto_nr, { budget: Number(r.budget), istEinnahmekonto: r.ist_einnahmekonto }]),
     );
 
     const tag = dayOfYear(now);
@@ -156,16 +157,26 @@ Deno.serve(async (req: Request) => {
       .map((id) => {
         const info = accountInfo.get(id)!;
         const actual = sumByAccountId.get(id) ?? 0;
-        const budget = budgetByKontoNr.get(info.number) ?? 0;
+        const gespeichert = budgetByKontoNr.get(info.number);
+        const budget = gespeichert?.budget ?? 0;
+        const istEinnahmekonto = gespeichert?.istEinnahmekonto ?? false;
         const prozent = budget > 0 ? (actual / budget) * 100 : null;
         let ampel: "green" | "yellow" | "red" | null = null;
-        if (budget > 0) {
+        if (!istEinnahmekonto && budget > 0) {
           const prorated = budget * (tag / tageGesamt);
           if (actual < prorated) ampel = "green";
           else if (actual <= prorated * 1.10) ampel = "yellow";
           else ampel = "red";
         }
-        return { nr: info.number, name: info.name, budget, actual, prozent, ampel };
+        return {
+          nr: info.number,
+          name: info.name,
+          budget,
+          actual,
+          prozent,
+          ampel,
+          istEinnahmekonto,
+        };
       })
       .sort((a, b) => a.nr - b.nr);
 
