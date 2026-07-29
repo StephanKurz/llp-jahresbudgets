@@ -1,8 +1,8 @@
 # Jahresbudgets (Easyverein)
 
-Ein schlankes, per `<iframe>` einbettbares Widget zur Budgetplanung: pro Buchungskonto mit
-Buchungen im laufenden Jahr wird das Jahresbudget editierbar angezeigt, zusammen mit der
-Ist-Summe, einer Auslastungsanzeige und einer Budgetwarnung-Ampel.
+Ein schlankes, per `<iframe>` einbettbares Widget zur Budgetplanung: pro Buchungskonto wird das
+Jahresbudget editierbar angezeigt, zusammen mit der Ist-Summe, dem zeitanteiligen Soll, einer
+Auslastungsanzeige und einer Budgetwarnung-Ampel.
 
 **Live:** https://stephankurz.github.io/llp-jahresbudgets/
 
@@ -20,35 +20,46 @@ Prinzip wie bei Termine-Suche und dem Schulkontakte-Editor).
 
 ## Funktionen
 
-- **Automatische Kontoauswahl**: gezeigt werden nur Buchungskonten, auf denen im laufenden Jahr
-  mindestens eine Buchung stattgefunden hat (der volle SKR49-Kontenrahmen hat mehrere tausend
-  Konten, die meisten davon ungenutzt).
-- **Jahresbudget editierbar**: pro Konto direkt in der Tabelle setzbar, wird sofort gespeichert
-  (Änderung per Tab/Klick außerhalb des Feldes bestätigen).
-- **Ist-Summe**: Summe aller Buchungsbeträge des laufenden Jahres auf diesem Konto, als
-  Absolutbetrag (Vorzeichen von Einnahme/Ausgabe wird ignoriert).
+- **Automatische Kontoauswahl**: gezeigt werden alle jemals tatsächlich bebuchten Buchungskonten
+  (der volle SKR49-Kontenrahmen hat mehrere tausend Konten, die meisten davon ungenutzte
+  Vorlagen). Ein Konto bleibt also auch sichtbar, wenn es im laufenden Jahr (noch) keine Buchung
+  hat. Über den Button **"Konten aktualisieren"** kann die zugrunde liegende Kontenliste neu
+  eingelesen werden (voller Kontenplan-Scan, dauert ~15-20 s) – nötig, wenn ein Konto zum ersten
+  Mal überhaupt bebucht wurde und noch nicht auftaucht.
+- **Jahresbudget editierbar**: Klick auf das Stift-Symbol öffnet ein Eingabefeld; Speichern erfolgt
+  automatisch beim Verlassen des Felds oder mit Enter. Ein leeres Feld bedeutet "kein Budget
+  hinterlegt" – das ist bewusst etwas anderes als ein explizit eingetragenes Budget von 0 €.
+- **Ist (Jahr)**: Saldo aller Buchungen des laufenden Jahres auf diesem Konto (Soll- und
+  Haben-Buchungen vorzeichenbehaftet aufsummiert, danach Absolutbetrag – damit sich
+  Gegenbuchungen auf Durchlauf-/Transitkonten korrekt ausgleichen statt sich zu addieren).
+- **Soll (Heute)**: zeitanteiliges Soll (`Budget × Tag im Jahr ÷ Tage im Jahr`), derselbe Wert,
+  der auch der Budgetwarnung zugrunde liegt.
 - **Auslastungsbalken**: Ist ÷ Budget in Prozent, Füllbreite optisch auf 100 % gedeckelt, die
-  tatsächliche Prozentzahl wird daneben trotzdem angezeigt.
-- **Budgetwarnung-Ampel**: vergleicht die Ist-Summe mit dem zeitanteiligen Soll
-  (`Budget × Tag im Jahr ÷ Tage im Jahr`) – **grün** wenn darunter, **gelb** bis einschließlich
-  10 % darüber, **rot** bei mehr als 10 % darüber. Gilt einheitlich für alle Konten (keine
-  Unterscheidung Einnahme/Ausgabe, da Easyverein kein entsprechendes Flag liefert). Ohne
-  hinterlegtes Budget erscheint ein neutraler grauer Punkt.
+  tatsächliche Prozentzahl wird trotzdem angezeigt. Grün < 80 %, sonst neutral, rot > 100 %.
+- **Einnahmekonto-Checkbox**: kehrt die Logik für dieses Konto um (z. B. für Mitgliedsbeiträge o.
+  Ä., wo eine hohe Auslastung erwünscht ist): Balken rot ≤ 80 %, gelb < 100 %, grün ≥ 100 %;
+  Budgetwarnung-Ampel grün wenn Ist ≥ Budget, sonst rot. Speichert die Änderung still im
+  Hintergrund.
+- **Budgetwarnung-Ampel** (Ausgabenkonten): vergleicht die Ist-Summe mit dem zeitanteiligen Soll –
+  **grün** wenn darunter, **gelb** bis einschließlich 10 % darüber, **rot** bei mehr als 10 %
+  darüber. Ohne hinterlegtes Budget erscheint ein neutraler grauer Punkt.
 
 ## Architektur
 
-Statisches HTML (`index.html`, kein Build-Schritt, keine Abhängigkeiten) plus zwei Supabase Edge
+Statisches HTML (`index.html`, kein Build-Schritt, keine Abhängigkeiten) plus drei Supabase Edge
 Functions im Projekt `llp-schuldaten`, die den Easyverein-API-Key serverseitig halten (er darf nie
 im Browser landen):
 
 | Edge Function | Zweck |
 |---|---|
-| `budget-uebersicht` | Liest den Kontenplan und alle Buchungen des Jahres von Easyverein, aggregiert je Konto, verknüpft das gespeicherte Budget und liefert eine fertige JSON-Übersicht (inkl. Prozent und Ampel) |
-| `budget-speichern` | Nimmt eine Budgetänderung entgegen und schreibt sie über die RPC `upsert_konto_budget` in die Tabelle `konto_budgets` |
+| `budget-uebersicht` | Liest die Konten aus dem Cache (`konten_cache`) und die Buchungen des laufenden Jahres von Easyverein, aggregiert je Konto, verknüpft das gespeicherte Budget und liefert eine fertige JSON-Übersicht |
+| `budget-speichern` | Nimmt eine Budget-/Einnahmekonto-Änderung entgegen und schreibt sie über die RPC `upsert_konto_budget` in die Tabelle `konto_budgets` |
+| `konten-aktualisieren` | Durchsucht einmalig den vollständigen Easyverein-Kontenplan (~80 Seiten, ~15-20 s) und speichert alle jemals bebuchten Konten in `konten_cache` – wird nur manuell per Button im Tool ausgelöst, damit die normale Ladezeit bei ~2-3 s bleibt |
 
-Die Tabelle `konto_budgets` (Primärschlüssel `konto_nr, jahr`) hat bewusst **kein öffentliches
-SELECT** – sie wird ausschließlich von `budget-uebersicht` per Service-Role gelesen und über die
-`SECURITY DEFINER`-RPC `upsert_konto_budget` beschrieben, nie direkt vom Client aus.
+Die Tabellen `konto_budgets` (Primärschlüssel `konto_nr, jahr`) und `konten_cache` haben bewusst
+**kein öffentliches SELECT** – sie werden ausschließlich von den Edge Functions per Service-Role
+gelesen bzw. (im Fall von `konto_budgets`) über die `SECURITY DEFINER`-RPC `upsert_konto_budget`
+beschrieben, nie direkt vom Client aus.
 
 **Benötigter Function-Secret:** `EV_API_KEY_BOOKING` (Easyverein-API-Key mit
 Finanzen/Buchungen-Berechtigung) muss im Supabase-Projekt unter Edge Functions → Secrets gesetzt
