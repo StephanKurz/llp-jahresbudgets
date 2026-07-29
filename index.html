@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Budgetplanung</title>
+<style>
+  :root {
+    --blue: #2f5fa8;
+    --border: #d7dce3;
+    --bg: #f7f8fa;
+    --text: #1f2937;
+    --muted: #6b7280;
+    --danger: #b3261e;
+    --ok: #2e7d32;
+    --warn: #b8860b;
+    --neutral: #9aa1ab;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    font-family: -apple-system, "Segoe UI", Arial, sans-serif;
+    color: var(--text);
+    background: var(--bg);
+  }
+  #app { max-width: 920px; margin: 0 auto; padding: 22px 20px 40px; }
+  h1 { font-size: 17px; margin: 0 0 4px; }
+  #subtitle { color: var(--muted); font-size: 12.5px; margin: 0 0 14px; }
+
+  #hint { color: var(--muted); font-size: 13px; margin-top: 8px; }
+  #error { color: var(--danger); font-size: 13px; margin-top: 10px; }
+
+  .card {
+    background: #fff; border: 1px solid var(--border); border-radius: 8px;
+    overflow: hidden;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 9px 10px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: .02em; }
+  tr:last-child td { border-bottom: none; }
+  td.num, th.num { text-align: right; }
+
+  .konto-nr { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  .budget-input {
+    width: 100px; padding: 5px 7px; border: 1px solid var(--border); border-radius: 5px;
+    font-size: 13px; text-align: right; font-variant-numeric: tabular-nums;
+  }
+  .budget-input:focus { outline: none; border-color: var(--blue); }
+
+  .save-feedback { display: block; font-size: 11px; margin-top: 3px; min-height: 14px; }
+  .save-feedback.ok { color: var(--ok); }
+  .save-feedback.err { color: var(--danger); }
+
+  .bar-cell { min-width: 140px; }
+  .bar-track {
+    position: relative; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 5px; height: 14px; overflow: hidden;
+  }
+  .bar-fill { height: 100%; background: var(--blue); }
+  .bar-fill.over { background: var(--danger); }
+  .bar-label { font-size: 11px; color: var(--muted); margin-top: 3px; text-align: right; }
+
+  .dot {
+    display: inline-block; width: 11px; height: 11px; border-radius: 50%;
+    vertical-align: middle;
+  }
+  .dot-green { background: var(--ok); }
+  .dot-yellow { background: var(--warn); }
+  .dot-red { background: var(--danger); }
+  .dot-neutral { background: var(--neutral); }
+
+  #loading { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <h1 id="title">Budgetplanung</h1>
+  <div id="subtitle"></div>
+  <div id="loading">Lade Kontodaten …</div>
+  <div id="error" hidden></div>
+  <div class="card" id="table-card" hidden>
+    <table>
+      <thead>
+        <tr>
+          <th>Nr.</th>
+          <th>Buchungskonto</th>
+          <th class="num">Jahresbudget</th>
+          <th class="num">Ist (Jahr)</th>
+          <th>Auslastung</th>
+          <th>Budgetwarnung</th>
+        </tr>
+      </thead>
+      <tbody id="table-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+  const BASE_URL = "https://cclcdhwnzkzciwjaclzt.supabase.co/functions/v1";
+  const UEBERSICHT_URL = `${BASE_URL}/budget-uebersicht`;
+  const SPEICHERN_URL = `${BASE_URL}/budget-speichern`;
+
+  const titleEl = document.getElementById("title");
+  const subtitleEl = document.getElementById("subtitle");
+  const loadingEl = document.getElementById("loading");
+  const errorEl = document.getElementById("error");
+  const tableCard = document.getElementById("table-card");
+  const tbody = document.getElementById("table-body");
+
+  const fmtEUR = new Intl.NumberFormat("de-DE", { style: "currency", currency: "EUR" });
+  const fmtNum = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 });
+
+  let currentJahr = null;
+
+  function ampelTitle(ampel) {
+    switch (ampel) {
+      case "green": return "Im Plan: Ist-Ausgaben liegen unter dem zeitanteiligen Soll.";
+      case "yellow": return "Achtung: Ist-Ausgaben liegen bis zu 10 % über dem zeitanteiligen Soll.";
+      case "red": return "Warnung: Ist-Ausgaben liegen mehr als 10 % über dem zeitanteiligen Soll.";
+      default: return "Kein Budget hinterlegt – keine Budgetwarnung möglich.";
+    }
+  }
+
+  function renderRow(konto) {
+    const tr = document.createElement("tr");
+    tr.dataset.nr = konto.nr;
+
+    const tdNr = document.createElement("td");
+    tdNr.className = "konto-nr";
+    tdNr.textContent = konto.nr;
+
+    const tdName = document.createElement("td");
+    tdName.textContent = konto.name;
+
+    const tdBudget = document.createElement("td");
+    tdBudget.className = "num";
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = "0";
+    input.step = "0.01";
+    input.className = "budget-input";
+    input.value = konto.budget > 0 ? konto.budget.toFixed(2) : "";
+    input.placeholder = "0,00";
+    const feedback = document.createElement("span");
+    feedback.className = "save-feedback";
+    tdBudget.appendChild(input);
+    tdBudget.appendChild(feedback);
+
+    const tdIst = document.createElement("td");
+    tdIst.className = "num";
+    tdIst.textContent = fmtEUR.format(konto.actual);
+
+    const tdBar = document.createElement("td");
+    tdBar.className = "bar-cell";
+    tdBar.innerHTML = renderBarHtml(konto);
+
+    const tdAmpel = document.createElement("td");
+    tdAmpel.title = ampelTitle(konto.ampel);
+    const dot = document.createElement("span");
+    dot.className = "dot dot-" + (konto.ampel || "neutral");
+    tdAmpel.appendChild(dot);
+
+    tr.append(tdNr, tdName, tdBudget, tdIst, tdBar, tdAmpel);
+    tbody.appendChild(tr);
+
+    input.addEventListener("change", () => saveBudget(konto.nr, input, feedback, tdBar, tdAmpel));
+  }
+
+  function renderBarHtml(konto) {
+    if (!konto.budget || konto.budget <= 0) {
+      return `<div class="bar-track"></div><div class="bar-label">kein Budget hinterlegt</div>`;
+    }
+    const prozent = konto.prozent ?? 0;
+    const width = Math.min(prozent, 100);
+    const overClass = prozent > 100 ? " over" : "";
+    return (
+      `<div class="bar-track"><div class="bar-fill${overClass}" style="width:${width}%"></div></div>` +
+      `<div class="bar-label">${fmtNum.format(Math.round(prozent))} %</div>`
+    );
+  }
+
+  function computeAmpel(budget, actual, jahr) {
+    if (!budget || budget <= 0) return null;
+    const now = new Date();
+    const start = new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
+    const tag = Math.floor((now.getTime() - start.getTime()) / 86400000) + 1;
+    const tageGesamt = (new Date(Date.UTC(jahr, 1, 29)).getUTCMonth() === 1) ? 366 : 365;
+    const prorated = budget * (tag / tageGesamt);
+    if (actual < prorated) return "green";
+    if (actual <= prorated * 1.10) return "yellow";
+    return "red";
+  }
+
+  async function saveBudget(nr, input, feedback, tdBar, tdAmpel) {
+    const value = parseFloat(input.value.replace(",", "."));
+    if (isNaN(value) || value < 0) {
+      feedback.textContent = "Ungültiger Wert.";
+      feedback.className = "save-feedback err";
+      return;
+    }
+    feedback.textContent = "Speichere …";
+    feedback.className = "save-feedback";
+    try {
+      const resp = await fetch(SPEICHERN_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ konto_nr: nr, jahr: currentJahr, budget: value }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || "Unbekannter Fehler.");
+
+      feedback.textContent = "Gespeichert.";
+      feedback.className = "save-feedback ok";
+
+      const tr = input.closest("tr");
+      const actualText = tr.children[3].textContent;
+      const actual = parseFloat(actualText.replace(/[^\d,-]/g, "").replace(",", "."));
+      const ampel = computeAmpel(value, actual, currentJahr);
+      tdBar.innerHTML = renderBarHtml({ budget: value, actual, prozent: value > 0 ? (actual / value) * 100 : null });
+      tdAmpel.title = ampelTitle(ampel);
+      tdAmpel.querySelector(".dot").className = "dot dot-" + (ampel || "neutral");
+    } catch (e) {
+      feedback.textContent = "Fehler: " + e.message;
+      feedback.className = "save-feedback err";
+    }
+  }
+
+  async function load() {
+    try {
+      const resp = await fetch(UEBERSICHT_URL);
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || "Unbekannter Fehler.");
+
+      currentJahr = data.jahr;
+      titleEl.textContent = `Budgetplanung ${data.jahr}`;
+      subtitleEl.textContent = `Stand: ${new Date(data.heute).toLocaleDateString("de-DE")} · nur Konten mit Buchungen in ${data.jahr}`;
+
+      if (data.konten.length === 0) {
+        loadingEl.textContent = `Keine Buchungen für ${data.jahr} gefunden.`;
+        return;
+      }
+
+      for (const konto of data.konten) renderRow(konto);
+
+      loadingEl.hidden = true;
+      tableCard.hidden = false;
+    } catch (e) {
+      loadingEl.hidden = true;
+      errorEl.textContent = "Fehler beim Laden: " + e.message;
+      errorEl.hidden = false;
+    }
+  }
+
+  load();
+</script>
+</body>
+</html>
