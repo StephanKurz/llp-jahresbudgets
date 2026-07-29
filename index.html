@@ -13,7 +13,7 @@
     --muted: #6b7280;
     --danger: #b3261e;
     --ok: #2e7d32;
-    --warn: #b8860b;
+    --warn: #f59e0b;
     --neutral: #9aa1ab;
   }
   * { box-sizing: border-box; }
@@ -199,7 +199,7 @@
       }
     }
     switch (ampel) {
-      case "green": return "Im Plan: Ist-Ausgaben liegen unter dem zeitanteiligen Soll.";
+      case "green": return "Im Plan: Ist-Ausgaben liegen bei oder unter dem zeitanteiligen Soll.";
       case "yellow": return "Achtung: Ist-Ausgaben liegen bis zu 10 % über dem zeitanteiligen Soll.";
       case "red": return "Warnung: Ist-Ausgaben liegen mehr als 10 % über dem zeitanteiligen Soll.";
       default: return "Kein Budget hinterlegt – keine Budgetwarnung möglich.";
@@ -377,7 +377,7 @@
     const tag = Math.floor((now.getTime() - start.getTime()) / 86400000) + 1;
     const tageGesamt = (new Date(Date.UTC(now.getUTCFullYear(), 1, 29)).getUTCMonth() === 1) ? 366 : 365;
     const prorated = budget * (tag / tageGesamt);
-    if (actual < prorated) return "green";
+    if (actual <= prorated) return "green";
     if (actual <= prorated * 1.10) return "yellow";
     return "red";
   }

@@ -210,7 +210,7 @@ Deno.serve(async (req: Request) => {
             // Umgekehrte Logik: Ist erreicht/übertrifft Budget = gut.
             ampel = actual >= budget ? "green" : "red";
           } else {
-            if (actual < sollHeute!) ampel = "green";
+            if (actual <= sollHeute!) ampel = "green";
             else if (actual <= sollHeute! * 1.10) ampel = "yellow";
             else ampel = "red";
           }
