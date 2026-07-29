@@ -13,7 +13,10 @@
 
 const EV_BASE_URL = "https://easyverein.com/api/v2.0";
 const PAGE_LIMIT = 100;
-const MIN_REQUEST_INTERVAL_MS = 650;
+// Anzahl gleichzeitiger Konto-Detail-Abfragen. Die einzelnen Buchungsseiten (max. 3 für ein
+// Jahr mit einigen hundert Buchungen) bleiben sequenziell, da jede die "next"-URL der
+// vorherigen braucht. Bei echtem 429 greift trotzdem der Retry-After-Backoff unten.
+const ACCOUNT_DETAIL_CONCURRENCY = 6;
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -27,16 +30,8 @@ function jsonResponse(data: unknown, status: number): Response {
   });
 }
 
-let lastRequestAt = 0;
-async function throttle(): Promise<void> {
-  const wait = MIN_REQUEST_INTERVAL_MS - (Date.now() - lastRequestAt);
-  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-  lastRequestAt = Date.now();
-}
-
 async function evGet(url: string, apiKey: string): Promise<Response> {
   for (let attempt = 0; attempt < 5; attempt++) {
-    await throttle();
     const resp = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } });
     if (resp.status === 429) {
       const retryAfter = Number(resp.headers.get("Retry-After") ?? "2");
@@ -62,6 +57,24 @@ async function evGetPaginated(startUrl: string, apiKey: string): Promise<any[]> 
     url = data.next ?? null;
   }
   return all;
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+  return results;
 }
 
 function extractId(resourceUrl: string | null | undefined): string | null {
@@ -112,11 +125,14 @@ Deno.serve(async (req: Request) => {
 
     const accountIds = [...sumByAccountId.keys()];
     const accountInfo = new Map<string, { number: number; name: string }>();
-    for (const id of accountIds) {
+    const details = await mapWithConcurrency(accountIds, ACCOUNT_DETAIL_CONCURRENCY, async (id) => {
       const resp = await evGet(`${EV_BASE_URL}/billing-account/${id}/`, evApiKey);
-      if (!resp.ok) continue;
+      if (!resp.ok) return null;
       const acc = await resp.json();
-      accountInfo.set(id, { number: acc.number, name: acc.name });
+      return { id, number: acc.number, name: acc.name };
+    });
+    for (const d of details) {
+      if (d) accountInfo.set(d.id, { number: d.number, name: d.name });
     }
 
     const budgetResp = await fetch(
