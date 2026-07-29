@@ -1,6 +1,9 @@
 // Liefert die Budgetübersicht für ein Jahr (Standard: laufendes Jahr, ?jahr=YYYY überschreibt):
-// pro Buchungskonto mit mindestens einer Buchung in diesem Jahr die Summe der Buchungsbeträge
-// (Absolutwert), das hinterlegte Jahresbudget, den Prozentsatz sowie eine Budgetwarnung-Ampel
+// pro Buchungskonto mit mindestens einer Buchung in diesem Jahr den Saldo (Soll- und
+// Haben-Buchungen mit Vorzeichen aufsummiert, danach Absolutwert - nicht die Summe der
+// Einzel-Absolutbeträge, sonst würden sich gegenläufige Buchungen auf einem Konto, z. B. bei
+// einem Geldtransit-/Durchlaufkonto, fälschlich addieren statt auszugleichen), das hinterlegte
+// Jahresbudget, den Prozentsatz sowie eine Budgetwarnung-Ampel
 // (Ist vs. zeitanteiligem Soll, linear nach Kalendertag). Nur Konten mit Buchungen in diesem
 // Jahr werden angezeigt - Kontonummern sind bei Easyverein nicht global eindeutig (mehrere
 // accountingPlans können dieselbe Nummer verwenden), daher lässt sich ein reines
@@ -115,13 +118,18 @@ Deno.serve(async (req: Request) => {
       `${EV_BASE_URL}/booking/?limit=${PAGE_LIMIT}&date__gt=${dateGt}&date__lt=${dateLt}`;
     const bookings = await evGetPaginated(bookingsUrl, evApiKey);
 
-    const sumByAccountId = new Map<string, number>();
+    // Vorzeichenbehaftet aufsummieren (Saldo je Konto) - der Absolutwert wird erst danach
+    // gebildet, siehe Kommentar oben.
+    const saldoByAccountId = new Map<string, number>();
     for (const b of bookings) {
       const accId = extractId(b.billingAccount);
       if (!accId) continue;
-      const amount = Math.abs(parseFloat(b.amount ?? "0"));
-      sumByAccountId.set(accId, (sumByAccountId.get(accId) ?? 0) + amount);
+      const amount = parseFloat(b.amount ?? "0");
+      saldoByAccountId.set(accId, (saldoByAccountId.get(accId) ?? 0) + amount);
     }
+    const sumByAccountId = new Map<string, number>(
+      [...saldoByAccountId].map(([id, saldo]) => [id, Math.abs(saldo)]),
+    );
 
     const accountIds = [...sumByAccountId.keys()];
     const accountInfo = new Map<string, { number: number; name: string }>();
