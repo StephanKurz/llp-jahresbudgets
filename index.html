@@ -30,6 +30,15 @@
   #hint { color: var(--muted); font-size: 13px; margin-top: 8px; }
   #error { color: var(--danger); font-size: 13px; margin-top: 10px; }
 
+  #refresh-row { margin: 0 0 14px; }
+  #refresh-btn {
+    background: none; border: 1px solid var(--border); border-radius: 5px;
+    color: var(--muted); font-size: 11.5px; padding: 4px 9px; cursor: pointer;
+  }
+  #refresh-btn:hover { color: var(--text); border-color: var(--muted); }
+  #refresh-btn:disabled { opacity: 0.6; cursor: default; }
+  #refresh-status { font-size: 11.5px; color: var(--muted); margin-left: 8px; }
+
   .card {
     background: #fff; border: 1px solid var(--border); border-radius: 8px;
     /* Bewusst KEIN overflow:hidden hier - jeder Vorfahre mit overflow != visible
@@ -78,8 +87,6 @@
   .einnahme-cell { text-align: center; }
   .einnahme-cell input { width: 16px; height: 16px; cursor: pointer; vertical-align: middle; }
 
-  .muted-dash { color: var(--muted); }
-
   .bar-cell { min-width: 140px; }
   .bar-track {
     position: relative; background: var(--bg); border: 1px solid var(--border);
@@ -87,6 +94,7 @@
   }
   .bar-fill { height: 100%; background: var(--blue); }
   .bar-fill.under { background: var(--ok); }
+  .bar-fill.warn { background: var(--warn); }
   .bar-fill.over { background: var(--danger); }
   .bar-label { font-size: 11px; color: var(--muted); margin-top: 3px; text-align: center; white-space: nowrap; }
 
@@ -115,6 +123,10 @@
 <div id="app">
   <h1 id="title">Budgetplanung</h1>
   <div id="subtitle"></div>
+  <div id="refresh-row">
+    <button id="refresh-btn" type="button" title="Durchsucht den vollen Kontenplan neu (~15-20s) - nötig, wenn ein Konto zum ersten Mal bebucht wurde und hier fehlt.">Konten aktualisieren</button>
+    <span id="refresh-status"></span>
+  </div>
   <div id="loading"><span class="spinner"></span><span id="loading-text">Lade Kontodaten …</span></div>
   <div id="error" hidden></div>
   <div class="card" id="table-card" hidden>
@@ -123,9 +135,10 @@
         <tr>
           <th>Nr.</th>
           <th>Buchungskonto</th>
-          <th class="einnahme-cell" title="Bei Einnahmekonten entfallen Auslastung und Budgetwarnung.">Einnahme&shy;konto</th>
+          <th class="einnahme-cell" title="Bei Einnahmekonten gilt eine umgekehrte Auslastungs- und Budgetwarnung-Logik.">Einnahme&shy;konto</th>
           <th class="num">Jahresbudget</th>
           <th class="num">Ist (Jahr)</th>
+          <th class="num">Soll (Heute)</th>
           <th>Auslastung</th>
           <th class="ampel-cell">Budgetwarnung</th>
         </tr>
@@ -139,6 +152,7 @@
   const BASE_URL = "https://cclcdhwnzkzciwjaclzt.supabase.co/functions/v1";
   const UEBERSICHT_URL = `${BASE_URL}/budget-uebersicht`;
   const SPEICHERN_URL = `${BASE_URL}/budget-speichern`;
+  const AKTUALISIEREN_URL = `${BASE_URL}/konten-aktualisieren`;
 
   const titleEl = document.getElementById("title");
   const subtitleEl = document.getElementById("subtitle");
@@ -147,6 +161,8 @@
   const errorEl = document.getElementById("error");
   const tableCard = document.getElementById("table-card");
   const tbody = document.getElementById("table-body");
+  const refreshBtn = document.getElementById("refresh-btn");
+  const refreshStatus = document.getElementById("refresh-status");
 
   const fmtEUR = new Intl.NumberFormat("de-DE", { style: "currency", currency: "EUR" });
   const fmtNum = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 });
@@ -160,7 +176,14 @@
 
   let currentJahr = null;
 
-  function ampelTitle(ampel) {
+  function ampelTitle(ampel, istEinnahmekonto) {
+    if (istEinnahmekonto) {
+      switch (ampel) {
+        case "green": return "Einnahmekonto: Ist erreicht oder übertrifft das Budget.";
+        case "red": return "Einnahmekonto: Ist liegt unter dem Budget.";
+        default: return "Kein Budget hinterlegt – keine Budgetwarnung möglich.";
+      }
+    }
     switch (ampel) {
       case "green": return "Im Plan: Ist-Ausgaben liegen unter dem zeitanteiligen Soll.";
       case "yellow": return "Achtung: Ist-Ausgaben liegen bis zu 10 % über dem zeitanteiligen Soll.";
@@ -185,7 +208,7 @@
     const einnahmeCheckbox = document.createElement("input");
     einnahmeCheckbox.type = "checkbox";
     einnahmeCheckbox.checked = !!konto.istEinnahmekonto;
-    einnahmeCheckbox.title = "Einnahmekonto: keine Auslastung/Budgetwarnung";
+    einnahmeCheckbox.title = "Einnahmekonto: umgekehrte Auslastungs-/Budgetwarnung-Logik";
     tdEinnahme.appendChild(einnahmeCheckbox);
 
     const tdBudget = document.createElement("td");
@@ -197,25 +220,28 @@
     tdIst.className = "num";
     tdIst.textContent = fmtEUR.format(konto.actual);
 
+    const tdSoll = document.createElement("td");
+    tdSoll.className = "num";
+
     const tdBar = document.createElement("td");
     tdBar.className = "bar-cell";
 
     const tdAmpel = document.createElement("td");
     tdAmpel.className = "ampel-cell";
 
-    tr.append(tdNr, tdName, tdEinnahme, tdBudget, tdIst, tdBar, tdAmpel);
+    tr.append(tdNr, tdName, tdEinnahme, tdBudget, tdIst, tdSoll, tdBar, tdAmpel);
     tbody.appendChild(tr);
 
     const state = { budget: konto.budget, actual: konto.actual, istEinnahmekonto: !!konto.istEinnahmekonto };
 
     renderBudgetDisplay(tdBudget, feedback, state);
-    tdBudget.appendChild(feedback);
+    renderSoll(tdSoll, state);
     renderBarAndAmpel(tdBar, tdAmpel, state);
 
     einnahmeCheckbox.addEventListener("change", () => {
       state.istEinnahmekonto = einnahmeCheckbox.checked;
       renderBarAndAmpel(tdBar, tdAmpel, state);
-      saveBudget(konto.nr, state, feedback, () => {});
+      saveBudget(konto.nr, state, feedback, () => {}, /* silent */ true);
     });
   }
 
@@ -225,7 +251,7 @@
     wrap.className = "budget-display";
     const valueSpan = document.createElement("span");
     valueSpan.className = "budget-value";
-    valueSpan.textContent = fmtEUR.format(state.budget || 0);
+    valueSpan.textContent = state.budget === null ? "–" : fmtEUR.format(state.budget);
     const editBtn = document.createElement("button");
     editBtn.className = "edit-btn";
     editBtn.type = "button";
@@ -233,6 +259,7 @@
     editBtn.innerHTML = PENCIL_SVG;
     wrap.append(valueSpan, editBtn);
     tdBudget.appendChild(wrap);
+    tdBudget.appendChild(feedback);
 
     editBtn.addEventListener("click", () => renderBudgetEdit(tdBudget, feedback, state));
   }
@@ -244,8 +271,8 @@
     input.min = "0";
     input.step = "0.01";
     input.className = "budget-input";
-    input.value = state.budget > 0 ? state.budget.toFixed(2) : "";
-    input.placeholder = "0,00";
+    input.value = state.budget === null ? "" : state.budget.toFixed(2);
+    input.placeholder = "kein Budget";
     tdBudget.appendChild(input);
     input.focus();
     input.select();
@@ -254,18 +281,26 @@
     const commit = () => {
       if (done) return;
       done = true;
-      const value = parseFloat(input.value.replace(",", ".").trim() || "0");
-      if (isNaN(value) || value < 0) {
-        feedback.textContent = "Ungültiger Wert.";
-        feedback.className = "save-feedback err";
-        renderBudgetDisplay(tdBudget, feedback, state);
-        return;
+      const raw = input.value.trim();
+      let value;
+      if (raw === "") {
+        value = null;
+      } else {
+        value = parseFloat(raw.replace(",", "."));
+        if (isNaN(value) || value < 0) {
+          feedback.textContent = "Ungültiger Wert.";
+          feedback.className = "save-feedback err";
+          renderBudgetDisplay(tdBudget, feedback, state);
+          return;
+        }
       }
       state.budget = value;
       renderBudgetDisplay(tdBudget, feedback, state);
       const tr = tdBudget.closest("tr");
       const tdBar = tr.querySelector(".bar-cell");
       const tdAmpel = tdBar.nextElementSibling;
+      const tdSoll = tdBar.previousElementSibling;
+      renderSoll(tdSoll, state);
       renderBarAndAmpel(tdBar, tdAmpel, state);
       saveBudget(Number(tr.dataset.nr), state, feedback, () => {});
     };
@@ -276,32 +311,50 @@
     });
   }
 
-  function renderBarAndAmpel(tdBar, tdAmpel, state) {
-    if (state.istEinnahmekonto) {
-      tdBar.innerHTML = `<span class="muted-dash">–</span>`;
-      tdAmpel.innerHTML = `<span class="muted-dash">–</span>`;
-      tdAmpel.title = "Einnahmekonto – keine Budgetwarnung.";
-      return;
-    }
-
-    const prozent = state.budget > 0 ? (state.actual / state.budget) * 100 : null;
-    if (!state.budget || state.budget <= 0) {
-      tdBar.innerHTML = `<div class="bar-track"></div><div class="bar-label">kein Budget hinterlegt</div>`;
-    } else {
-      const width = Math.min(prozent, 100);
-      const fillClass = prozent > 100 ? " over" : prozent < 80 ? " under" : "";
-      tdBar.innerHTML =
-        `<div class="bar-track"><div class="bar-fill${fillClass}" style="width:${width}%"></div></div>` +
-        `<div class="bar-label">${fmtNum.format(Math.round(prozent))} %</div>`;
-    }
-
-    const ampel = computeAmpel(state.budget, state.actual);
-    tdAmpel.innerHTML = `<span class="dot dot-${ampel || "neutral"}"></span>`;
-    tdAmpel.title = ampelTitle(ampel);
+  function computeSollHeute(budget) {
+    if (budget === null) return null;
+    const now = new Date();
+    const start = new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
+    const tag = Math.floor((now.getTime() - start.getTime()) / 86400000) + 1;
+    const tageGesamt = (new Date(Date.UTC(now.getUTCFullYear(), 1, 29)).getUTCMonth() === 1) ? 366 : 365;
+    return budget * (tag / tageGesamt);
   }
 
-  function computeAmpel(budget, actual) {
-    if (!budget || budget <= 0) return null;
+  function renderSoll(tdSoll, state) {
+    const sollHeute = computeSollHeute(state.budget);
+    tdSoll.textContent = sollHeute === null ? "–" : fmtEUR.format(sollHeute);
+  }
+
+  function renderBarAndAmpel(tdBar, tdAmpel, state) {
+    if (state.budget === null) {
+      tdBar.innerHTML = `<div class="bar-track"></div><div class="bar-label">kein Budget hinterlegt</div>`;
+    } else {
+      // Bei explizit auf 0 gesetztem Budget ist jeder Ist-Betrag > 0 "unendlich" über Budget.
+      const prozent = state.budget > 0 ? (state.actual / state.budget) * 100 : (state.actual > 0 ? Infinity : 0);
+      const width = Math.min(prozent, 100);
+      let fillClass;
+      if (state.istEinnahmekonto) {
+        // Umgekehrte Logik: hohe Auslastung = gut (Einnahmeziel erreicht/übertroffen).
+        fillClass = prozent <= 80 ? " over" : prozent < 100 ? " warn" : " under";
+      } else {
+        fillClass = prozent > 100 ? " over" : prozent < 80 ? " under" : "";
+      }
+      const label = Number.isFinite(prozent) ? `${fmtNum.format(Math.round(prozent))} %` : "∞ %";
+      tdBar.innerHTML =
+        `<div class="bar-track"><div class="bar-fill${fillClass}" style="width:${width}%"></div></div>` +
+        `<div class="bar-label">${label}</div>`;
+    }
+
+    const ampel = computeAmpel(state.budget, state.actual, state.istEinnahmekonto);
+    tdAmpel.innerHTML = `<span class="dot dot-${ampel || "neutral"}"></span>`;
+    tdAmpel.title = ampelTitle(ampel, state.istEinnahmekonto);
+  }
+
+  function computeAmpel(budget, actual, istEinnahmekonto) {
+    if (budget === null) return null;
+    if (istEinnahmekonto) {
+      return actual >= budget ? "green" : "red";
+    }
     const now = new Date();
     const start = new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
     const tag = Math.floor((now.getTime() - start.getTime()) / 86400000) + 1;
@@ -312,9 +365,11 @@
     return "red";
   }
 
-  async function saveBudget(nr, state, feedback, onDone) {
-    feedback.textContent = "Speichere …";
-    feedback.className = "save-feedback";
+  async function saveBudget(nr, state, feedback, onDone, silent = false) {
+    if (!silent) {
+      feedback.textContent = "Speichere …";
+      feedback.className = "save-feedback";
+    }
     try {
       const resp = await fetch(SPEICHERN_URL, {
         method: "POST",
@@ -329,8 +384,10 @@
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || "Unbekannter Fehler.");
 
-      feedback.textContent = "Gespeichert.";
-      feedback.className = "save-feedback ok";
+      if (!silent) {
+        feedback.textContent = "Gespeichert.";
+        feedback.className = "save-feedback ok";
+      }
       onDone(true);
     } catch (e) {
       feedback.textContent = "Fehler: " + e.message;
@@ -378,6 +435,29 @@
       errorEl.hidden = false;
     }
   }
+
+  refreshBtn.addEventListener("click", async () => {
+    refreshBtn.disabled = true;
+    refreshStatus.textContent = "Durchsuche vollen Kontenplan … (kann bis zu 20 s dauern)";
+    try {
+      const resp = await fetch(AKTUALISIEREN_URL, { method: "POST" });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || "Unbekannter Fehler.");
+
+      refreshStatus.textContent = `${data.kontenGefunden} Konten gefunden. Lade Übersicht neu …`;
+      tbody.innerHTML = "";
+      tableCard.hidden = true;
+      loadingEl.hidden = false;
+      loadingEl.style.display = "";
+      errorEl.hidden = true;
+      await load();
+      refreshStatus.textContent = "";
+    } catch (e) {
+      refreshStatus.textContent = "Fehler: " + e.message;
+    } finally {
+      refreshBtn.disabled = false;
+    }
+  });
 
   load();
 </script>

@@ -1,7 +1,9 @@
 // Speichert/aktualisiert das Jahresbudget für ein Buchungskonto per RPC upsert_konto_budget.
-// Läuft server-seitig (statt direktem Tabellenzugriff aus dem Browser), da konto_budgets
-// bewusst keine RLS-Policy für anon/authenticated hat - Schreiben ist nur über die
-// SECURITY DEFINER RPC (mit anon-Key) erlaubt.
+// budget darf null sein (= "kein Budget hinterlegt", leeres Feld) - das ist bewusst etwas
+// anderes als budget=0 (explizit gesetztes Nullbudget, z.B. "hier darf gar nichts ausgegeben
+// werden"). Läuft server-seitig (statt direktem Tabellenzugriff aus dem Browser), da
+// konto_budgets bewusst keine RLS-Policy für anon/authenticated hat - Schreiben ist nur über
+// die SECURITY DEFINER RPC (mit anon-Key) erlaubt.
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -29,17 +31,23 @@ Deno.serve(async (req: Request) => {
 
   const konto_nr = Number(body.konto_nr);
   const jahr = Number(body.jahr);
-  const budget = Number(body.budget);
   const ist_einnahmekonto = Boolean(body.ist_einnahmekonto);
+
+  let budget: number | null;
+  if (body.budget === null || body.budget === undefined) {
+    budget = null;
+  } else {
+    budget = Number(body.budget);
+    if (!Number.isFinite(budget) || budget < 0) {
+      return jsonResponse({ error: "budget ist ungültig oder negativ." }, 400);
+    }
+  }
 
   if (!Number.isInteger(konto_nr) || konto_nr <= 0) {
     return jsonResponse({ error: "konto_nr fehlt oder ist ungültig." }, 400);
   }
   if (!Number.isInteger(jahr) || jahr < 2000 || jahr > 2100) {
     return jsonResponse({ error: "jahr fehlt oder ist ungültig." }, 400);
-  }
-  if (!Number.isFinite(budget) || budget < 0) {
-    return jsonResponse({ error: "budget fehlt oder ist negativ." }, 400);
   }
 
   const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;

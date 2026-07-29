@@ -1,18 +1,24 @@
 // Liefert die Budgetübersicht für ein Jahr (Standard: laufendes Jahr, ?jahr=YYYY überschreibt):
-// pro Buchungskonto mit mindestens einer Buchung in diesem Jahr den Saldo (Soll- und
-// Haben-Buchungen mit Vorzeichen aufsummiert, danach Absolutwert - nicht die Summe der
-// Einzel-Absolutbeträge, sonst würden sich gegenläufige Buchungen auf einem Konto, z. B. bei
-// einem Geldtransit-/Durchlaufkonto, fälschlich addieren statt auszugleichen), das hinterlegte
-// Jahresbudget, den Prozentsatz sowie eine Budgetwarnung-Ampel
-// (Ist vs. zeitanteiligem Soll, linear nach Kalendertag). Nur Konten mit Buchungen in diesem
-// Jahr werden angezeigt - Kontonummern sind bei Easyverein nicht global eindeutig (mehrere
-// accountingPlans können dieselbe Nummer verwenden), daher lässt sich ein reines
-// Budget-ohne-Buchung nicht zuverlässig einem Konto zuordnen.
+// pro tatsächlich genutztem Buchungskonto (aus konten_cache, s.u.) den Saldo des laufenden
+// Jahres (Soll- und Haben-Buchungen mit Vorzeichen aufsummiert, danach Absolutwert - nicht die
+// Summe der Einzel-Absolutbeträge, sonst würden sich gegenläufige Buchungen auf einem Konto,
+// z. B. bei einem Geldtransit-/Durchlaufkonto, fälschlich addieren statt auszugleichen), das
+// hinterlegte Jahresbudget, den Prozentsatz, das zeitanteilige Soll (Budget * Tag/Tage im Jahr)
+// sowie eine Budgetwarnung-Ampel (Ist vs. zeitanteiligem Soll; bei Einnahmekonten umgekehrt:
+// Ist >= Budget = grün, sonst rot).
+//
+// Konten kommen aus konten_cache statt aus einem Live-Scan des vollen Kontenplans (mehrere
+// tausend SKR-Konten, die meisten ungenutzte Vorlagen) - das würde ~15-20s dauern. Der Cache
+// wird durch die separate Function konten-aktualisieren gepflegt (manuell per Button im Tool).
+// Dadurch werden auch Konten angezeigt, die im laufenden Jahr noch keine Buchung haben, aber
+// grundsätzlich schon einmal genutzt wurden (linkedBookings > 0) - für neue, im Cache noch
+// unbekannte Konten (die aber schon dieses Jahr bebucht wurden) wird der Name per Einzelabfrage
+// nachgeladen, damit sie nicht fehlen.
 //
 // Läuft server-seitig, weil EV_API_KEY_BOOKING (Finanz-Scope, als Function-Secret zu setzen)
-// niemals im Browser landen darf. Liest konto_budgets direkt per Service-Role (Tabelle hat
-// bewusst keine RLS-Policy für anon/authenticated), Schreiben erfolgt separat über
-// budget-speichern.
+// niemals im Browser landen darf. Liest konto_budgets/konten_cache direkt per Service-Role
+// (beide Tabellen haben bewusst keine RLS-Policy für anon/authenticated), Schreiben der Budgets
+// erfolgt separat über budget-speichern.
 
 const EV_BASE_URL = "https://easyverein.com/api/v2.0";
 const PAGE_LIMIT = 100;
@@ -131,16 +137,38 @@ Deno.serve(async (req: Request) => {
       [...saldoByAccountId].map(([id, saldo]) => [id, Math.abs(saldo)]),
     );
 
-    const accountIds = [...sumByAccountId.keys()];
+    // Konten-Cache lesen (per Button "Konten aktualisieren" gepflegt) - liefert alle jemals
+    // bebuchten Konten, nicht nur die mit Buchungen im laufenden Jahr.
+    const cacheResp = await fetch(
+      `${SUPABASE_URL}/rest/v1/konten_cache?select=id,number,name`,
+      { headers: { apikey: SERVICE_ROLE_KEY, Authorization: `Bearer ${SERVICE_ROLE_KEY}` } },
+    );
+    if (!cacheResp.ok) {
+      const text = await cacheResp.text();
+      throw new Error(`Supabase-Fehler beim Lesen des Konten-Cache (${cacheResp.status}): ${text}`);
+    }
+    const cacheRows: { id: number; number: number; name: string }[] = await cacheResp.json();
+
     const accountInfo = new Map<string, { number: number; name: string }>();
-    const details = await mapWithConcurrency(accountIds, ACCOUNT_DETAIL_CONCURRENCY, async (id) => {
-      const resp = await evGet(`${EV_BASE_URL}/billing-account/${id}/`, evApiKey);
-      if (!resp.ok) return null;
-      const acc = await resp.json();
-      return { id, number: acc.number, name: acc.name };
-    });
-    for (const d of details) {
-      if (d) accountInfo.set(d.id, { number: d.number, name: d.name });
+    for (const row of cacheRows) {
+      accountInfo.set(String(row.id), { number: row.number, name: row.name });
+    }
+
+    // Union aus Cache-Konten und Konten mit Buchungen im laufenden Jahr - falls ein Konto
+    // dieses Jahr zum ersten Mal bebucht wurde und noch nicht im Cache steht, wird sein Name
+    // per Einzelabfrage nachgeladen, statt es einfach wegzulassen.
+    const accountIds = [...new Set([...accountInfo.keys(), ...sumByAccountId.keys()])];
+    const missingIds = accountIds.filter((id) => !accountInfo.has(id));
+    if (missingIds.length > 0) {
+      const details = await mapWithConcurrency(missingIds, ACCOUNT_DETAIL_CONCURRENCY, async (id) => {
+        const resp = await evGet(`${EV_BASE_URL}/billing-account/${id}/`, evApiKey);
+        if (!resp.ok) return null;
+        const acc = await resp.json();
+        return { id, number: acc.number, name: acc.name };
+      });
+      for (const d of details) {
+        if (d) accountInfo.set(d.id, { number: d.number, name: d.name });
+      }
     }
 
     const budgetResp = await fetch(
@@ -151,10 +179,13 @@ Deno.serve(async (req: Request) => {
       const text = await budgetResp.text();
       throw new Error(`Supabase-Fehler beim Lesen der Budgets (${budgetResp.status}): ${text}`);
     }
-    const budgetRows: { konto_nr: number; budget: string | number; ist_einnahmekonto: boolean }[] =
+    const budgetRows: { konto_nr: number; budget: string | number | null; ist_einnahmekonto: boolean }[] =
       await budgetResp.json();
-    const budgetByKontoNr = new Map<number, { budget: number; istEinnahmekonto: boolean }>(
-      budgetRows.map((r) => [r.konto_nr, { budget: Number(r.budget), istEinnahmekonto: r.ist_einnahmekonto }]),
+    const budgetByKontoNr = new Map<number, { budget: number | null; istEinnahmekonto: boolean }>(
+      budgetRows.map((r) => [
+        r.konto_nr,
+        { budget: r.budget === null ? null : Number(r.budget), istEinnahmekonto: r.ist_einnahmekonto },
+      ]),
     );
 
     const tag = dayOfYear(now);
@@ -166,21 +197,30 @@ Deno.serve(async (req: Request) => {
         const info = accountInfo.get(id)!;
         const actual = sumByAccountId.get(id) ?? 0;
         const gespeichert = budgetByKontoNr.get(info.number);
-        const budget = gespeichert?.budget ?? 0;
+        const budget = gespeichert?.budget ?? null; // null = kein Budget hinterlegt (≠ 0!)
         const istEinnahmekonto = gespeichert?.istEinnahmekonto ?? false;
-        const prozent = budget > 0 ? (actual / budget) * 100 : null;
+        const hasBudget = budget !== null;
+        // Bei explizit auf 0 gesetztem Budget ist jeder Ist-Betrag > 0 "unendlich" über Budget -
+        // JSON kennt kein Infinity (würde zu null werden), daher ein großer endlicher Platzhalter.
+        const prozent = hasBudget ? (budget > 0 ? (actual / budget) * 100 : (actual > 0 ? 999999 : 0)) : null;
+        const sollHeute = hasBudget ? budget * (tag / tageGesamt) : null;
         let ampel: "green" | "yellow" | "red" | null = null;
-        if (!istEinnahmekonto && budget > 0) {
-          const prorated = budget * (tag / tageGesamt);
-          if (actual < prorated) ampel = "green";
-          else if (actual <= prorated * 1.10) ampel = "yellow";
-          else ampel = "red";
+        if (hasBudget) {
+          if (istEinnahmekonto) {
+            // Umgekehrte Logik: Ist erreicht/übertrifft Budget = gut.
+            ampel = actual >= budget ? "green" : "red";
+          } else {
+            if (actual < sollHeute!) ampel = "green";
+            else if (actual <= sollHeute! * 1.10) ampel = "yellow";
+            else ampel = "red";
+          }
         }
         return {
           nr: info.number,
           name: info.name,
           budget,
           actual,
+          sollHeute,
           prozent,
           ampel,
           istEinnahmekonto,
