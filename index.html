@@ -241,7 +241,7 @@
     einnahmeCheckbox.addEventListener("change", () => {
       state.istEinnahmekonto = einnahmeCheckbox.checked;
       renderBarAndAmpel(tdBar, tdAmpel, state);
-      saveBudget(konto.nr, state, feedback, () => {}, /* silent */ true);
+      saveBudget(konto.nr, state, feedback, () => {});
     });
   }
 
@@ -365,11 +365,11 @@
     return "red";
   }
 
-  async function saveBudget(nr, state, feedback, onDone, silent = false) {
-    if (!silent) {
-      feedback.textContent = "Speichere …";
-      feedback.className = "save-feedback";
-    }
+  async function saveBudget(nr, state, feedback, onDone) {
+    // Speichern läuft bewusst ohne Erfolgsmeldung (kein "Gespeichert."-Text) - nur ein
+    // tatsächlicher Fehler wird angezeigt.
+    feedback.textContent = "";
+    feedback.className = "save-feedback";
     try {
       const resp = await fetch(SPEICHERN_URL, {
         method: "POST",
@@ -384,10 +384,6 @@
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || "Unbekannter Fehler.");
 
-      if (!silent) {
-        feedback.textContent = "Gespeichert.";
-        feedback.className = "save-feedback ok";
-      }
       onDone(true);
     } catch (e) {
       feedback.textContent = "Fehler: " + e.message;
