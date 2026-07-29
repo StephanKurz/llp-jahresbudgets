@@ -38,6 +38,11 @@
   #refresh-btn:hover { color: var(--text); border-color: var(--muted); }
   #refresh-btn:disabled { opacity: 0.6; cursor: default; }
   #refresh-status { font-size: 11.5px; color: var(--muted); margin-left: 8px; }
+  #show-all-label {
+    display: inline-flex; align-items: center; gap: 5px; margin-left: 14px;
+    font-size: 11.5px; color: var(--muted); cursor: pointer; user-select: none;
+  }
+  #show-all-label input { width: 13px; height: 13px; cursor: pointer; }
 
   .card {
     background: #fff; border: 1px solid var(--border); border-radius: 8px;
@@ -130,6 +135,10 @@
   <div id="refresh-row">
     <button id="refresh-btn" type="button" title="Durchsucht den vollen Kontenplan neu (~15-20s) - nötig, wenn ein Konto zum ersten Mal bebucht wurde und hier fehlt.">Konten aktualisieren</button>
     <span id="refresh-status"></span>
+    <label id="show-all-label">
+      <input type="checkbox" id="show-all-checkbox">
+      Alle Konten anzeigen (inkl. Durchlaufkonten, Steuern)
+    </label>
   </div>
   <div id="loading"><span class="spinner"></span><span id="loading-text">Lade Kontodaten …</span></div>
   <div id="error" hidden></div>
@@ -177,6 +186,18 @@
   const tbody = document.getElementById("table-body");
   const refreshBtn = document.getElementById("refresh-btn");
   const refreshStatus = document.getElementById("refresh-status");
+  const showAllCheckbox = document.getElementById("show-all-checkbox");
+
+  // Durchlauf-/Bank-/Steuerkonten ohne direkte Ausgaben-/Einnahmenrelevanz für die
+  // Budgetplanung - standardmäßig ausgeblendet, per Checkbox einblendbar.
+  const HIDDEN_KONTO_NRS = new Set([705, 945, 946, 955, 1370, 2665, 3451, 3453, 4150]);
+
+  function applyKontoFilter() {
+    const showAll = showAllCheckbox.checked;
+    for (const tr of tbody.querySelectorAll("tr")) {
+      tr.hidden = !showAll && HIDDEN_KONTO_NRS.has(Number(tr.dataset.nr));
+    }
+  }
 
   const fmtEUR = new Intl.NumberFormat("de-DE", { style: "currency", currency: "EUR" });
   const fmtNum = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 });
@@ -437,6 +458,7 @@
       }
 
       for (const konto of data.konten) renderRow(konto);
+      applyKontoFilter();
 
       clearInterval(timer);
       loadingEl.hidden = true;
@@ -473,6 +495,8 @@
       refreshBtn.disabled = false;
     }
   });
+
+  showAllCheckbox.addEventListener("change", applyKontoFilter);
 
   load();
 </script>
