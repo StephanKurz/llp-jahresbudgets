@@ -70,14 +70,21 @@
   .dot-red { background: var(--danger); }
   .dot-neutral { background: var(--neutral); }
 
-  #loading { color: var(--muted); font-size: 13px; }
+  #loading { color: var(--muted); font-size: 13px; display: flex; align-items: center; gap: 9px; }
+  .spinner {
+    width: 15px; height: 15px; flex: none;
+    border: 2px solid var(--border); border-top-color: var(--blue);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
 <div id="app">
   <h1 id="title">Budgetplanung</h1>
   <div id="subtitle"></div>
-  <div id="loading">Lade Kontodaten …</div>
+  <div id="loading"><span class="spinner"></span><span id="loading-text">Lade Kontodaten …</span></div>
   <div id="error" hidden></div>
   <div class="card" id="table-card" hidden>
     <table>
@@ -104,6 +111,7 @@
   const titleEl = document.getElementById("title");
   const subtitleEl = document.getElementById("subtitle");
   const loadingEl = document.getElementById("loading");
+  const loadingTextEl = document.getElementById("loading-text");
   const errorEl = document.getElementById("error");
   const tableCard = document.getElementById("table-card");
   const tbody = document.getElementById("table-body");
@@ -227,6 +235,14 @@
   }
 
   async function load() {
+    const startedAt = Date.now();
+    const tick = () => {
+      const s = Math.floor((Date.now() - startedAt) / 1000);
+      loadingTextEl.textContent = `Lade Kontodaten … ${s} s`;
+    };
+    tick();
+    const timer = setInterval(tick, 1000);
+
     try {
       const resp = await fetch(UEBERSICHT_URL);
       const data = await resp.json();
@@ -237,15 +253,19 @@
       subtitleEl.textContent = `Stand: ${new Date(data.heute).toLocaleDateString("de-DE")} · nur Konten mit Buchungen in ${data.jahr}`;
 
       if (data.konten.length === 0) {
-        loadingEl.textContent = `Keine Buchungen für ${data.jahr} gefunden.`;
+        clearInterval(timer);
+        loadingEl.querySelector(".spinner").remove();
+        loadingTextEl.textContent = `Keine Buchungen für ${data.jahr} gefunden.`;
         return;
       }
 
       for (const konto of data.konten) renderRow(konto);
 
+      clearInterval(timer);
       loadingEl.hidden = true;
       tableCard.hidden = false;
     } catch (e) {
+      clearInterval(timer);
       loadingEl.hidden = true;
       errorEl.textContent = "Fehler beim Laden: " + e.message;
       errorEl.hidden = false;
